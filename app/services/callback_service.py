@@ -1,7 +1,8 @@
 """Service for sending callbacks to GUVI evaluation endpoint."""
 import requests
-from app.models.session_state import SessionState
-from app.models.intelligence import GuviCallbackPayload
+from typing import List
+from app.models.session_state import SessionState, Message
+from app.models.intelligence import GuviCallbackPayload, ExtractedIntelligence
 from app.config import config
 from app.utils.logger import logger
 
@@ -12,6 +13,107 @@ class CallbackService:
     def __init__(self):
         self.callback_url = config.GUVI_CALLBACK_URL
         self.sent_callbacks = set()  # Track sent callbacks to avoid duplicates
+    
+    def generate_agent_notes_summary(
+        self,
+        session: SessionState,
+        conversation_history: List[Message],
+        intelligence: ExtractedIntelligence
+    ) -> str:
+        """
+        Generate comprehensive summary explaining why the agent thought it was a scam.
+        
+        This summary includes:
+        - Conversation overview
+        - Scam detection reasoning
+        - Extracted intelligence (especially phone numbers)
+        - Key indicators that led to scam classification
+        """
+        summary_parts = []
+        
+        # 1. Conversation Overview
+        summary_parts.append("CONVERSATION SUMMARY:")
+        summary_parts.append(f"Total messages exchanged: {session.totalMessagesExchanged}")
+        summary_parts.append(f"Scam detected with confidence: {session.scamConfidence:.2f}")
+        
+        # 2. Detection Reasoning
+        if session.finalDecisionReason:
+            summary_parts.append(f"\nDETECTION REASONING:")
+            summary_parts.append(session.finalDecisionReason)
+        
+        # 3. Key Conversation Points
+        if conversation_history:
+            summary_parts.append("\nKEY CONVERSATION POINTS:")
+            # Show first and last few messages to understand context
+            scammer_messages = [msg for msg in conversation_history if msg.sender == "scammer"]
+            if scammer_messages:
+                if len(scammer_messages) <= 3:
+                    # Show all if few messages
+                    for i, msg in enumerate(scammer_messages, 1):
+                        summary_parts.append(f"  Message {i}: {msg.text[:150]}{'...' if len(msg.text) > 150 else ''}")
+                else:
+                    # Show first and last messages
+                    summary_parts.append(f"  Initial message: {scammer_messages[0].text[:150]}{'...' if len(scammer_messages[0].text) > 150 else ''}")
+                    summary_parts.append(f"  Latest message: {scammer_messages[-1].text[:150]}{'...' if len(scammer_messages[-1].text) > 150 else ''}")
+        
+        # 4. Extracted Intelligence (with emphasis on phone numbers)
+        summary_parts.append("\nEXTRACTED INTELLIGENCE:")
+        
+        # Phone numbers - emphasized
+        if intelligence.phoneNumbers:
+            summary_parts.append(f"  Phone Numbers ({len(intelligence.phoneNumbers)}): {', '.join(intelligence.phoneNumbers)}")
+        else:
+            summary_parts.append("  Phone Numbers: None detected")
+        
+        # Other intelligence
+        if intelligence.upiIds:
+            summary_parts.append(f"  UPI IDs ({len(intelligence.upiIds)}): {', '.join(intelligence.upiIds[:5])}{'...' if len(intelligence.upiIds) > 5 else ''}")
+        
+        if intelligence.bankAccounts:
+            summary_parts.append(f"  Bank Accounts ({len(intelligence.bankAccounts)}): {len(intelligence.bankAccounts)} account(s) detected")
+        
+        if intelligence.phishingLinks:
+            summary_parts.append(f"  Phishing Links ({len(intelligence.phishingLinks)}): {', '.join(intelligence.phishingLinks[:3])}{'...' if len(intelligence.phishingLinks) > 3 else ''}")
+        
+        if intelligence.suspiciousKeywords:
+            summary_parts.append(f"  Suspicious Keywords: {', '.join(intelligence.suspiciousKeywords[:10])}{'...' if len(intelligence.suspiciousKeywords) > 10 else ''}")
+        
+        # 5. Why it's a scam - synthesize from all available information
+        summary_parts.append("\nSCAM INDICATORS IDENTIFIED:")
+        scam_indicators = []
+        
+        if intelligence.phoneNumbers:
+            scam_indicators.append(f"Phone numbers shared ({len(intelligence.phoneNumbers)})")
+        
+        if intelligence.upiIds:
+            scam_indicators.append(f"UPI IDs requested/shared ({len(intelligence.upiIds)})")
+        
+        if intelligence.phishingLinks:
+            scam_indicators.append(f"Suspicious links provided ({len(intelligence.phishingLinks)})")
+        
+        if intelligence.bankAccounts:
+            scam_indicators.append("Bank account information requested")
+        
+        # Check for urgency/threats in conversation
+        conversation_text = " ".join([msg.text.lower() for msg in conversation_history])
+        if any(keyword in conversation_text for keyword in ['urgent', 'immediately', 'blocked', 'suspended', 'frozen']):
+            scam_indicators.append("Urgency/threat language detected")
+        
+        if any(keyword in conversation_text for keyword in ['verify', 'confirm', 'share', 'send', 'provide']):
+            scam_indicators.append("Requests for verification/sensitive information")
+        
+        if scam_indicators:
+            summary_parts.append("  " + "; ".join(scam_indicators))
+        else:
+            summary_parts.append("  General scam patterns detected based on conversation analysis")
+        
+        # 6. Additional agent notes if available
+        if session.agentNotes:
+            summary_parts.append("\nADDITIONAL AGENT OBSERVATIONS:")
+            for note in session.agentNotes[-5:]:  # Last 5 notes
+                summary_parts.append(f"  - {note}")
+        
+        return "\n".join(summary_parts)
     
     def send_callback(self, session: SessionState) -> bool:
         """
@@ -24,30 +126,21 @@ class CallbackService:
         if session.sessionId in self.sent_callbacks:
             return True
         
+        # Generate comprehensive agent notes summary
+        agent_notes_summary = self.generate_agent_notes_summary(
+            session,
+            session.conversationHistory,
+            session.extractedIntelligence
+        )
+        
         # Prepare payload
-            # Format agent notes
-            if session.agentNotes:
-                agent_notes_text = "; ".join(session.agentNotes)
-            else:
-                # Generate basic notes if none exist
-                notes_parts = []
-                if session.scamDetected:
-                    notes_parts.append(f"Scam detected (confidence: {session.scamConfidence:.2f})")
-                if session.extractedIntelligence.bankAccounts:
-                    notes_parts.append(f"Bank accounts extracted: {len(session.extractedIntelligence.bankAccounts)}")
-                if session.extractedIntelligence.phoneNumbers:
-                    notes_parts.append(f"Phone numbers extracted: {len(session.extractedIntelligence.phoneNumbers)}")
-                if session.extractedIntelligence.upiIds:
-                    notes_parts.append(f"UPI IDs extracted: {len(session.extractedIntelligence.upiIds)}")
-                agent_notes_text = "; ".join(notes_parts) if notes_parts else "Scam detected but no specific notes recorded"
-            
-            payload = GuviCallbackPayload(
-                sessionId=session.sessionId,
-                scamDetected=session.scamDetected,
-                totalMessagesExchanged=session.totalMessagesExchanged,
-                extractedIntelligence=session.extractedIntelligence,
-                agentNotes=agent_notes_text
-            )
+        payload = GuviCallbackPayload(
+            sessionId=session.sessionId,
+            scamDetected=session.scamDetected,
+            totalMessagesExchanged=session.totalMessagesExchanged,
+            extractedIntelligence=session.extractedIntelligence,
+            agentNotes=agent_notes_summary
+        )
         
         # Print the request that will be sent to GUVI
         import json

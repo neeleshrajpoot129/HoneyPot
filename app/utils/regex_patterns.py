@@ -14,10 +14,14 @@ class RegexPatterns:
         re.IGNORECASE
     )
     
-    # Phone number patterns (Indian) - handles dashes, spaces, dots
-    # Matches: +91-9876543210, +91 9876543210, +919876543210, 9876543210, etc.
-    # Pattern handles: +91 followed by optional separator, then 10 digits (with optional separators)
-    PHONE_NUMBER = re.compile(r'\+91[-.\s]?\d{10}|\+91\d{10}|91[-.\s]?\d{10}|0[-.\s]?\d{10}|[6-9]\d{9}')
+    # Phone number patterns (Indian) - captures various formats
+    # Matches: +91 98765 43210, +91-98765-43210, 91 98765 43210, 9876543210, 09876543210, etc.
+    # Pattern: optional country code (+91/91/0) + exactly 10 digits starting with 6-9, with optional separators
+    # This pattern is more flexible to catch numbers with spaces/dashes but normalization will clean them
+    PHONE_NUMBER = re.compile(
+        r'(?:\+91[\s\-]?|91[\s\-]?|0[\s\-]?)?[6-9](?:[\d\s\-]{9,10})',
+        re.IGNORECASE
+    )
     
     # URL patterns
     URL = re.compile(

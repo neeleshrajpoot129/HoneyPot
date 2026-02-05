@@ -14,7 +14,6 @@ from app.models.session_state import Message, Metadata
 router = APIRouter()
 
 
-
 @router.post("/honeypot/message", response_model=HoneypotResponse)
 @router.get("/honeypot/message", response_model=HoneypotResponse)
 async def process_message(
@@ -29,9 +28,9 @@ async def process_message(
 ) -> HoneypotResponse:
     """
     Main endpoint for processing scam messages.
-
+    
     Supports both POST (with JSON body) and GET (with query parameters).
-
+    
     This endpoint:
     1. Receives incoming messages
     2. Detects scam intent
@@ -47,7 +46,7 @@ async def process_message(
                     status="error",
                     error="GET requests require sessionId and text query parameters"
                 )
-
+            
             # Build request from query parameters
             request = HoneypotRequest(
                 sessionId=sessionId,
@@ -63,27 +62,27 @@ async def process_message(
                     locale="IN"
                 ) if timestamp else None
             )
-
+        
         # Ensure request is provided
         if not request:
             return HoneypotResponse(
                 status="error",
                 error="Request body or query parameters required"
             )
-
+        
         # Get or create session
         session = session_manager.get_or_create_session(request.sessionId)
-
+        
         # Update session with conversation history from request
         if request.conversationHistory:
             session.conversationHistory = request.conversationHistory
-
+        
         # Detect scam intent (LLM-first with rule-based fallback)
         detection_result = scam_detector.detect_scam(
             request.message,
             session.conversationHistory
         )
-
+        
         # Update session with scam detection status and audit fields
         session = session_manager.update_session(
             request.sessionId,
@@ -91,30 +90,22 @@ async def process_message(
             scam_detected=detection_result.is_scam,
             scam_confidence=detection_result.confidence
         )
-
+        
         # Store audit fields for explainability
         session.llmScamResult = detection_result.llm_result
         session.finalDecisionReason = detection_result.final_decision_reason
-
-        # Get is_scam value
-        is_scam = detection_result.is_scam
-
-        # Add initial scam detection note
-        if is_scam:
-            session_manager.add_agent_note(
-                request.sessionId,
-                f"Scam detected with confidence {detection_result.confidence:.2f}"
-            )
-
+        
         # Log detection details for audit trail
         method = "rule-based fallback" if detection_result.rule_based_fallback else "LLM"
         logger.info(
             f"Scam detection for session {session.sessionId} ({method}): "
-            f"is_scam={is_scam}, "
+            f"is_scam={detection_result.is_scam}, "
             f"confidence={detection_result.confidence:.2f}, "
             f"reason={detection_result.final_decision_reason}"
         )
-
+        
+        is_scam = detection_result.is_scam
+        
         # If scam detected, activate agent
         if is_scam:
             # Process message through orchestrator
@@ -123,7 +114,7 @@ async def process_message(
                 request.message,
                 session
             )
-
+            
             # Safety guard is already called inside orchestrator
             # But we still need to handle the response
             if agent_response:
@@ -135,7 +126,7 @@ async def process_message(
                     timestamp=request.message.timestamp
                 )
                 session.conversationHistory.append(user_message)
-
+                
                 # Check if conversation has ended and callback should be sent
                 # Callback is only sent when conversation is completed (not during active engagement)
                 if session.conversationEnded and callback_service.should_send_callback(session):
@@ -145,7 +136,7 @@ async def process_message(
                         logger.info(f"Callback sent for completed conversation: {session.sessionId}")
                     except Exception as e:
                         logger.error(f"Error in callback (non-blocking): {e}")
-
+                
                 return HoneypotResponse(
                     status="success",
                     reply=agent_response
@@ -154,14 +145,14 @@ async def process_message(
                 # Agent decided not to continue engagement (conversation ended)
                 # Mark conversation as ended and send callback
                 session.conversationEnded = True
-
+                
                 if callback_service.should_send_callback(session):
                     try:
                         callback_service.send_callback(session)
                         logger.info(f"Callback sent for ended conversation: {session.sessionId}")
                     except Exception as e:
                         logger.error(f"Error in callback (non-blocking): {e}")
-
+                
                 return HoneypotResponse(
                     status="success",
                     reply=None  # No response - conversation ended
@@ -172,7 +163,7 @@ async def process_message(
                 status="success",
                 reply=None  # Don't engage with non-scam messages
             )
-
+    
     except Exception as e:
         logger.error(f"Error processing message: {e}", exc_info=True)
         return HoneypotResponse(
