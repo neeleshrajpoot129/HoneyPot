@@ -25,13 +25,29 @@ class CallbackService:
             return True
         
         # Prepare payload
-        payload = GuviCallbackPayload(
-            sessionId=session.sessionId,
-            scamDetected=session.scamDetected,
-            totalMessagesExchanged=session.totalMessagesExchanged,
-            extractedIntelligence=session.extractedIntelligence,
-            agentNotes="; ".join(session.agentNotes) if session.agentNotes else "No specific notes"
-        )
+            # Format agent notes
+            if session.agentNotes:
+                agent_notes_text = "; ".join(session.agentNotes)
+            else:
+                # Generate basic notes if none exist
+                notes_parts = []
+                if session.scamDetected:
+                    notes_parts.append(f"Scam detected (confidence: {session.scamConfidence:.2f})")
+                if session.extractedIntelligence.bankAccounts:
+                    notes_parts.append(f"Bank accounts extracted: {len(session.extractedIntelligence.bankAccounts)}")
+                if session.extractedIntelligence.phoneNumbers:
+                    notes_parts.append(f"Phone numbers extracted: {len(session.extractedIntelligence.phoneNumbers)}")
+                if session.extractedIntelligence.upiIds:
+                    notes_parts.append(f"UPI IDs extracted: {len(session.extractedIntelligence.upiIds)}")
+                agent_notes_text = "; ".join(notes_parts) if notes_parts else "Scam detected but no specific notes recorded"
+            
+            payload = GuviCallbackPayload(
+                sessionId=session.sessionId,
+                scamDetected=session.scamDetected,
+                totalMessagesExchanged=session.totalMessagesExchanged,
+                extractedIntelligence=session.extractedIntelligence,
+                agentNotes=agent_notes_text
+            )
         
         # Print the request that will be sent to GUVI
         import json

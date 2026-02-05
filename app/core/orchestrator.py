@@ -8,7 +8,9 @@ Execution Model:
 4. Safety Guard - SEQUENTIAL (final gatekeeper)
 """
 import asyncio
+import json
 from typing import Optional
+from groq import Groq
 from app.models.session_state import Message, SessionState
 from app.models.strategy import StrategyDecision
 from app.core.session_manager import session_manager
@@ -16,6 +18,8 @@ from app.core.intelligence_aggregator import intelligence_aggregator
 from app.agents.persona_agent import PersonaAgent
 from app.agents.strategy_agent import StrategyAgent
 from app.agents.safety_guard import safety_guard
+from app.utils.prompts import AgentNotesPrompts
+from app.config import config
 from app.utils.logger import logger
 
 
@@ -31,6 +35,15 @@ class Orchestrator:
     def __init__(self):
         self.persona_agent = PersonaAgent()
         self.strategy_agent = StrategyAgent()
+        self._groq_client = None
+        
+        # Initialize Groq for LLM-based agent notes
+        if config.GROQ_API_KEY:
+            try:
+                self._groq_client = Groq(api_key=config.GROQ_API_KEY)
+            except Exception as e:
+                logger.warning(f"Orchestrator: Failed to initialize Groq for agent notes: {e}")
+                self._groq_client = None
     
     def process_message(
         self,
@@ -159,24 +172,98 @@ class Orchestrator:
         session: SessionState,
         intelligence
     ):
-        """Add notes about extracted intelligence."""
-        if intelligence.phishingLinks:
-            session_manager.add_agent_note(
-                session.sessionId,
-                f"Extracted phishing link: {intelligence.phishingLinks[-1]}"
-            )
+        """
+        Generate reasoning-based agent notes using LLM.
         
-        if intelligence.upiIds:
-            session_manager.add_agent_note(
-                session.sessionId,
-                f"Extracted UPI ID: {intelligence.upiIds[-1]}"
-            )
+        Notes explain WHY it was detected as scam, not just what was extracted.
+        This is a summary/reasoning of the entire conversation.
+        """
+        # Prepare intelligence summary
+        intelligence_dict = {
+            "bankAccounts": intelligence.bankAccounts,
+            "phoneNumbers": intelligence.phoneNumbers,
+            "upiIds": intelligence.upiIds,
+            "phishingLinks": intelligence.phishingLinks,
+            "suspiciousKeywords": intelligence.suspiciousKeywords
+        }
         
-        if intelligence.phoneNumbers:
-            session_manager.add_agent_note(
-                session.sessionId,
-                f"Extracted phone number: {intelligence.phoneNumbers[-1]}"
+        # Try LLM-based reasoning notes
+        if self._groq_client:
+            try:
+                reasoning_note = self._generate_reasoning_notes(
+                    session,
+                    intelligence_dict
+                )
+                if reasoning_note:
+                    session_manager.add_agent_note(session.sessionId, reasoning_note)
+                    return
+            except Exception as e:
+                logger.warning(f"LLM agent notes generation failed: {e}. Using fallback.")
+        
+        # Fallback to rule-based notes if LLM fails
+        self._generate_fallback_notes(session, intelligence_dict)
+    
+    def _generate_reasoning_notes(
+        self,
+        session: SessionState,
+        intelligence_dict: dict
+    ) -> Optional[str]:
+        """Generate reasoning-based notes using LLM."""
+        try:
+            prompt = AgentNotesPrompts.get_agent_notes_prompt(
+                conversation_history=session.conversationHistory,
+                extracted_intelligence=intelligence_dict,
+                scam_detection_reason=session.finalDecisionReason or "Scam detected",
+                scam_confidence=session.scamConfidence
             )
+            
+            response = self._groq_client.chat.completions.create(
+                model=config.GROQ_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,  # Low temperature for consistent reasoning
+                max_tokens=200
+            )
+            
+            reasoning = response.choices[0].message.content.strip()
+            
+            # Clean up the response
+            if reasoning.startswith('"') and reasoning.endswith('"'):
+                reasoning = reasoning[1:-1]
+            
+            logger.debug(f"Generated reasoning notes: {reasoning[:100]}...")
+            return reasoning
+            
+        except Exception as e:
+            logger.error(f"Error generating reasoning notes: {e}", exc_info=True)
+            return None
+    
+    def _generate_fallback_notes(
+        self,
+        session: SessionState,
+        intelligence_dict: dict
+    ):
+        """Fallback rule-based notes generation."""
+        notes = []
+        
+        if session.finalDecisionReason:
+            notes.append(f"Scam detected: {session.finalDecisionReason}")
+        
+        if intelligence_dict.get("bankAccounts"):
+            notes.append(f"Extracted bank account(s): {', '.join(intelligence_dict['bankAccounts'])}")
+        
+        if intelligence_dict.get("phoneNumbers"):
+            notes.append(f"Extracted phone number(s): {', '.join(intelligence_dict['phoneNumbers'])}")
+        
+        if intelligence_dict.get("upiIds"):
+            notes.append(f"Extracted UPI ID(s): {', '.join(intelligence_dict['upiIds'])}")
+        
+        if intelligence_dict.get("phishingLinks"):
+            notes.append(f"Extracted phishing link(s): {', '.join(intelligence_dict['phishingLinks'])}")
+        
+        # Add summary note
+        if notes:
+            summary = "; ".join(notes)
+            session_manager.add_agent_note(session.sessionId, summary)
 
 
 # Global orchestrator instance

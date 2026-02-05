@@ -5,7 +5,7 @@ This module contains all prompts used by different agents in the honeypot system
 Prompts are organized by agent for easy maintenance and updates.
 """
 
-from typing import Dict
+from typing import Dict, List
 from app.models.strategy import ConversationGoal
 
 
@@ -263,6 +263,169 @@ class FallbackResponses:
         
         else:  # WRAP_UP
             return "I'll check with my bank directly. Thanks for letting me know."
+
+
+# ============================================================================
+# INTELLIGENCE EXTRACTION PROMPTS
+# ============================================================================
+
+class IntelligenceExtractionPrompts:
+    """Prompts for intelligence extraction using LLM."""
+    
+    @staticmethod
+    def get_intelligence_extraction_prompt(
+        conversation_history: List,
+        current_message: str
+    ) -> str:
+        """
+        Get prompt for LLM-based intelligence extraction.
+        
+        Args:
+            conversation_history: All messages in the conversation
+            current_message: Current message text
+            
+        Returns:
+            Formatted prompt string
+        """
+        # Build conversation context
+        conversation_text = ""
+        for i, msg in enumerate(conversation_history, 1):
+            conversation_text += f"Message {i} ({msg.sender}): {msg.text}\n"
+        
+        conversation_text += f"Current Message (scammer): {current_message}\n"
+        
+        return f"""You are an intelligence extraction agent analyzing a scam conversation.
+
+Your task: Extract ALL intelligence from the ENTIRE conversation (all messages, not just the latest).
+
+Analyze EVERY message in the conversation and extract:
+
+1. BANK ACCOUNT NUMBERS:
+   - Any format: XXXX-XXXX-XXXX-XXXX, XXXX XXXX XXXX XXXX, or 16 consecutive digits
+   - Indian bank accounts, international accounts, any format
+   - Example: 1234-5678-9012-3456, 1234567890123456, 1234 5678 9012 3456
+
+2. PHONE NUMBERS:
+   - Indian numbers: +91-XXXXXXXXXX, +91 XXXXXXXXXX, +91XXXXXXXXXX, 91XXXXXXXXXX, 0XXXXXXXXXX, or 10-digit numbers starting with 6-9
+   - International numbers: ANY format with country codes (e.g., +1-XXX-XXX-XXXX, +44-XXXX-XXXXXX, etc.)
+   - Handle dashes, spaces, parentheses, dots: +1 (555) 123-4567, +44.20.1234.5678
+   - Extract ALL phone numbers regardless of format
+
+3. UPI IDs:
+   - Any format: name@paytm, name@gpay, name@phonepe, name@ybl, name@okicici, etc.
+   - Handle variations: name@upi, name@payzapp, etc.
+
+4. PHISHING LINKS:
+   - Any URLs: http://, https://, www., short links (bit.ly, tinyurl, etc.)
+   - Extract ALL links mentioned in conversation
+
+5. SUSPICIOUS KEYWORDS:
+   - Urgency: urgent, immediately, asap, hurry, quickly, right now
+   - Threats: blocked, suspended, frozen, locked, closed, terminated
+   - Sensitive info: OTP, PIN, password, account number, UPI ID, CVV
+   - Actions: verify, share, send, provide, click, call
+   - Time pressure: minutes, hours, today, deadline, final notice
+
+CRITICAL INSTRUCTIONS:
+- Extract from ALL messages in the conversation, not just the latest
+- Cumulate everything - don't miss intelligence from earlier messages
+- Handle ANY format - don't rely on specific patterns
+- International phone numbers are valid - extract them
+- Bank accounts can be in any format - extract them
+- Be thorough - check every single message
+- Normalize phone numbers to include country code (e.g., +91XXXXXXXXXX for Indian, +1XXXXXXXXXX for US)
+- Remove duplicates before returning
+
+Conversation:
+{conversation_text}
+
+Return ONLY valid JSON in this EXACT format:
+{{
+  "bankAccounts": ["1234567890123456"],
+  "phoneNumbers": ["+919876543210", "+15551234567"],
+  "upiIds": ["scammer@paytm"],
+  "phishingLinks": ["http://example.com"],
+  "suspiciousKeywords": ["urgent", "blocked", "otp"]
+}}
+
+If no intelligence found, return empty arrays:
+{{
+  "bankAccounts": [],
+  "phoneNumbers": [],
+  "upiIds": [],
+  "phishingLinks": [],
+  "suspiciousKeywords": []
+}}
+
+JSON response:"""
+
+
+# ============================================================================
+# AGENT NOTES PROMPTS (Reasoning-based)
+# ============================================================================
+
+class AgentNotesPrompts:
+    """Prompts for generating reasoning-based agent notes."""
+    
+    @staticmethod
+    def get_agent_notes_prompt(
+        conversation_history: List,
+        extracted_intelligence: Dict,
+        scam_detection_reason: str,
+        scam_confidence: float
+    ) -> str:
+        """
+        Get prompt for generating reasoning-based agent notes.
+        
+        Args:
+            conversation_history: All messages in the conversation
+            extracted_intelligence: Extracted intelligence summary
+            scam_detection_reason: Why scam was detected
+            scam_confidence: Scam detection confidence score
+            
+        Returns:
+            Formatted prompt string
+        """
+        # Build conversation summary
+        conversation_summary = ""
+        for i, msg in enumerate(conversation_history[-10:], 1):  # Last 10 messages
+            conversation_summary += f"{i}. {msg.sender}: {msg.text}\n"
+        
+        intelligence_summary = f"""
+Extracted Intelligence:
+- Bank Accounts: {len(extracted_intelligence.get('bankAccounts', []))} found
+- Phone Numbers: {len(extracted_intelligence.get('phoneNumbers', []))} found
+- UPI IDs: {len(extracted_intelligence.get('upiIds', []))} found
+- Phishing Links: {len(extracted_intelligence.get('phishingLinks', []))} found
+- Suspicious Keywords: {len(extracted_intelligence.get('suspiciousKeywords', []))} found
+"""
+        
+        return f"""You are analyzing a scam conversation to generate agent notes.
+
+Your task: Write a SHORT, CLEAR summary explaining WHY this was detected as a scam.
+
+Focus on:
+- Scam tactics used (urgency, threats, time pressure)
+- What the scammer was trying to extract (OTP, PIN, account numbers, etc.)
+- Red flags and suspicious behavior
+- Key intelligence gathered
+
+Do NOT just list what was extracted. Explain the REASONING and TACTICS.
+
+Conversation Summary:
+{conversation_summary}
+
+Scam Detection:
+- Reason: {scam_detection_reason}
+- Confidence: {scam_confidence:.2f}
+{intelligence_summary}
+
+Write a concise summary (2-3 sentences) explaining why this is a scam and what tactics were used.
+
+Example format:
+"Scammer used urgency tactics (threatened account blocking) and repeatedly requested sensitive information (OTP, account number, UPI PIN) to gain unauthorized access. Extracted bank account number and phone number from conversation. Time-pressure tactics escalated from '2 hours' to '2 minutes' to create panic."
+
+Your summary:"""
 
 
 # ============================================================================

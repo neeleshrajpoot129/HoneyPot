@@ -95,6 +95,13 @@ async def process_message(
         session.llmScamResult = detection_result.llm_result
         session.finalDecisionReason = detection_result.final_decision_reason
         
+        # Add initial scam detection note
+        if is_scam:
+            session_manager.add_agent_note(
+                request.sessionId,
+                f"Scam detected with confidence {detection_result.confidence:.2f}"
+            )
+        
         # Log detection details for audit trail
         method = "rule-based fallback" if detection_result.rule_based_fallback else "LLM"
         logger.info(
